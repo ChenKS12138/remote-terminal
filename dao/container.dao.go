@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"time"
+	"strings"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -13,7 +13,6 @@ import (
 
 const (
 	CONTAINER_IMAGE   = "debian:11"
-	CONTAINER_COMMAND = "/bin/bash"
 )
 
 type ContainerDao struct {
@@ -84,9 +83,8 @@ func (c *ContainerDao) CreateByID(ID string, out io.Writer) (*types.Container, e
 		Tty:          true,
 		AttachStdout: true,
 		OpenStdin:    true,
-		Cmd:          []string{CONTAINER_COMMAND},
+		Cmd:          []string{"bash","-c","sleep 10;while true;do if [ $( ls /dev/pts | wc -l ) -gt 2 ];then sleep 10;else exit 1;fi ;done"},
 		Image:        CONTAINER_IMAGE,
-		Env:          []string{"TERM=xterm-256color"},
 	}, &container.HostConfig{
 		ExtraHosts: []string{
 			"host.docker.internal:host-gateway",
@@ -100,14 +98,45 @@ func (c *ContainerDao) CreateByID(ID string, out io.Writer) (*types.Container, e
 }
 
 func (c *ContainerDao) AttachAndWait(cont *types.Container, in io.Reader, out io.Writer, wsCloseChan chan interface{}, resizeChan chan [2]float64) error {
-	if err := c.cli.ContainerStart(c.ctx, cont.ID, types.ContainerStartOptions{}); err != nil {
+	switch strings.ToLower(cont.State) {
+	case "paused":
+		fallthrough
+	case "exited":
+		fallthrough
+	case "created":
+		if err := c.cli.ContainerStart(c.ctx, cont.ID, types.ContainerStartOptions{}); err != nil {
+			return err
+		}
+	case "restarting":
+		fallthrough
+	case "running":
+		// do nothing
+	case "removing":
+		fallthrough
+	case "dead":
+		return fmt.Errorf("can not restart %s container",cont.State)
+	default:
+		return fmt.Errorf("unexpected container state %s",cont.State)
+	}
+
+	execId,err := c.cli.ContainerExecCreate(c.ctx,cont.ID,types.ExecConfig{
+		Privileged: false,
+		Tty: true,
+		AttachStdin: true,
+		AttachStderr: true,
+		AttachStdout: true,
+		Detach: false,
+		Cmd: []string{"/bin/bash"},
+		Env: []string{"TERM=xterm-256color"},
+	})
+	if err != nil {
 		return err
 	}
-	waiter, err := c.cli.ContainerAttach(c.ctx, cont.ID, types.ContainerAttachOptions{
-		Stdin:  true,
-		Stdout: true,
-		Stderr: true,
-		Stream: true,
+
+	
+	waiter, err := c.cli.ContainerExecAttach(c.ctx, execId.ID, types.ExecStartCheck{
+		Detach: false,
+		Tty: true,
 	})
 	if err != nil {
 		return err
@@ -115,33 +144,37 @@ func (c *ContainerDao) AttachAndWait(cont *types.Container, in io.Reader, out io
 	go io.Copy(out, waiter.Reader)
 	go io.Copy(waiter.Conn, in)
 
-	statusCh, errCh := c.cli.ContainerWait(c.ctx, cont.ID, container.WaitConditionNotRunning)
-	waiter.Conn.Write([]byte("\r"))
 	for {
 		select {
-		case err := <-errCh:
-			if err != nil {
+		case <- wsCloseChan:
+			waiter.Conn.Write([]byte("\u0004"))
+			waiter.Close()
+			return nil
+		case size := <- resizeChan:
+			if err = c.cli.ContainerExecResize(c.ctx,execId.ID,types.ResizeOptions{
+				Height: uint(size[0]),
+				Width: uint(size[1]),
+			}) ; err != nil {
 				return err
 			}
-		case <-statusCh:
-			return nil
-		case <-wsCloseChan:
-			return nil
-		case size := <-resizeChan:
-			c.Resize(cont, uint(size[0]), uint(size[1]))
 		}
 	}
 
 }
 
-func (c *ContainerDao) Resize(cont *types.Container, height uint, width uint) error {
-	return c.cli.ContainerResize(c.ctx, cont.ID, types.ResizeOptions{
-		Height: height,
-		Width:  width,
-	})
-}
 
-func (c *ContainerDao) Shutdown(cont *types.Container) error {
-	timeout := time.Duration(1) * time.Second
-	return c.cli.ContainerStop(c.ctx, cont.ID, &timeout)
-}
+// func (c *ContainerDao) Shutdown(cont *types.Container) error {
+// 	resp,err := c.cli.ContainerStatsOneShot(c.ctx,cont.ID)
+// 	if err != nil {
+// 		return err
+// 	}
+// 	stats := types.Stats{}
+// 	if err = json.NewDecoder(resp.Body).Decode(&stats) ;err != nil {
+// 		return err
+// 	}
+// 	if stats.PidsStats.Current > 1 {
+// 		return nil
+// 	}
+// 	timeout := time.Duration(0) * time.Second
+// 	return c.cli.ContainerStop(c.ctx, cont.ID, &timeout)
+// }

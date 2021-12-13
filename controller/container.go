@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/ChenKS12138/remote-terminal/auth"
@@ -98,7 +99,7 @@ func (cc *ContainerController) connect(c *gin.Context) {
 	}
 	defer ws.Close()
 	wsCloseChan := make(chan interface{})
-	ws.SetCloseHandler(func(code int, text string) error {
+	ws.SetCloseHandler(func(_ int, _ string) error {
 		wsCloseChan <- nil
 		return nil
 	})
@@ -126,10 +127,11 @@ func (cc *ContainerController) connect(c *gin.Context) {
 		wsTerminalIO.Write([]byte(fmt.Sprintf("Container Found!\r\nImage: %s\r\nReusing...\r\n", container.Image)))
 	}
 	wsTerminalIO.Write([]byte("Container Ready!\r\n"))
-	defer func() {
-		go containerDao.Shutdown(container)
-	}()
+	// defer func() {
+	// 	go containerDao.Shutdown(container)
+	// }()
 	if err := containerDao.AttachAndWait(container, wsTerminalIO.IOData, wsTerminalIO, wsCloseChan, wsTerminalIO.resizeChan); err != nil {
+		log.Println(err)
 		panic(err)
 	}
 }
