@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	CONTAINER_IMAGE   = "debian:11"
+	CONTAINER_IMAGE   = "centos:8"
 )
 
 type ContainerDao struct {
