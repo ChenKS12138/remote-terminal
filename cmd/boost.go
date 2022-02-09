@@ -40,6 +40,7 @@ func Boost() {
 	index := controller.NewIndexController()
 	container := controller.NewContainerController()
 	oauth := controller.NewOauthController()
+	static := controller.NewStaticController()
 
 	r := gin.New()
 	r.LoadHTMLGlob("template/*.html")
@@ -53,6 +54,7 @@ func Boost() {
 	index.Group(r.Group("/"))
 	container.Group(r.Group("/container"))
 	oauth.Group(r.Group("/oauth"))
+	static.Group(r.Group("/static"))
 
 	srv := &http.Server{
 		Addr:    configDao.BindAddr,
